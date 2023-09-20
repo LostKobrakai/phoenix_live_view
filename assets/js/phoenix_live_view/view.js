@@ -656,10 +656,12 @@ export default class View {
   onJoinError(resp){
     if(resp.reason === "reload"){
       this.log("error", () => [`failed mount with ${resp.status}. Falling back to page request`, resp])
-      return this.onRedirect({to: this.href})
+      if(this.isMain()){ this.onRedirect({to: this.href}) }
+      return
     } else if(resp.reason === "unauthorized" || resp.reason === "stale"){
       this.log("error", () => ["unauthorized live_redirect. Falling back to page request", resp])
-      return this.onRedirect({to: this.href})
+      if(this.isMain()){ this.onRedirect({to: this.href}) }
+      return
     }
     if(resp.redirect || resp.live_redirect){
       this.joinPending = false
@@ -911,7 +913,7 @@ export default class View {
     }
     this.pushWithReply(refGenerator, "event", event, resp => {
       DOM.showError(inputEl, this.liveSocket.binding(PHX_FEEDBACK_FOR))
-      if(DOM.isUploadInput(inputEl) && inputEl.getAttribute("data-phx-auto-upload") !== null){
+      if(DOM.isUploadInput(inputEl) && DOM.isAutoUpload(inputEl)){
         if(LiveUploader.filesAwaitingPreflight(inputEl).length > 0){
           let [ref, _els] = refGenerator()
           this.uploadFiles(inputEl.form, targetCtx, ref, cid, (_uploads) => {
@@ -1073,7 +1075,10 @@ export default class View {
       let inputs = Array.from(form.elements).filter(el => DOM.isFormInput(el) && el.name && !el.hasAttribute(phxChange))
       if(inputs.length === 0){ return }
 
+      // we must clear tracked uploads before recovery as they no longer have valid refs
+      inputs.forEach(input => input.hasAttribute(PHX_UPLOAD_REF) && LiveUploader.clearFiles(input))
       let input = inputs.find(el => el.type !== "hidden") || inputs[0]
+
       let phxEvent = form.getAttribute(this.binding(PHX_AUTO_RECOVER)) || form.getAttribute(this.binding("change"))
       JS.exec("change", phxEvent, view, input, ["push", {_target: input.name, newCid: newCid, callback: callback}])
     })
@@ -1119,7 +1124,10 @@ export default class View {
         .filter(form => form.elements.length > 0)
         .filter(form => form.getAttribute(this.binding(PHX_AUTO_RECOVER)) !== "ignore")
         .map(form => {
-          let newForm = template.content.querySelector(`form[id="${form.id}"][${phxChange}="${form.getAttribute(phxChange)}"]`)
+          // attribute given via JS module needs to be escaped as it contains the symbols []",
+          // which result in an invalid css selector otherwise.
+          const phxChangeValue = form.getAttribute(phxChange).replaceAll(/([\[\]"])/g, '\\$1')
+          let newForm = template.content.querySelector(`form[id="${form.id}"][${phxChange}="${phxChangeValue}"]`)
           if(newForm){
             return [form, newForm, this.targetComponentID(newForm)]
           } else {

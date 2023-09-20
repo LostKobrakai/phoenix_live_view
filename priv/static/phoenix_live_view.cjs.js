@@ -304,6 +304,9 @@ var DOM = {
   isUploadInput(el) {
     return el.type === "file" && el.getAttribute(PHX_UPLOAD_REF) !== null;
   },
+  isAutoUpload(inputEl) {
+    return inputEl.hasAttribute("data-phx-auto-upload");
+  },
   findUploadInputs(node) {
     return this.all(node, `input[type="file"][${PHX_UPLOAD_REF}]`);
   },
@@ -329,6 +332,9 @@ var DOM = {
       return false;
     }
     if (href.startsWith("mailto:") || href.startsWith("tel:")) {
+      return false;
+    }
+    if (e.target.isContentEditable) {
       return false;
     }
     try {
@@ -793,7 +799,9 @@ var UploadEntry = class {
   error(reason = "failed") {
     this.fileEl.removeEventListener(PHX_LIVE_FILE_UPDATED, this._onElUpdated);
     this.view.pushFileProgress(this.fileEl, this.ref, { error: reason });
-    LiveUploader.clearFiles(this.fileEl);
+    if (!dom_default.isAutoUpload(this.fileEl)) {
+      LiveUploader.clearFiles(this.fileEl);
+    }
   }
   onDone(callback) {
     this._onDone = () => {
@@ -930,6 +938,9 @@ var LiveUploader = class {
       return entry;
     });
     let groupedEntries = this._entries.reduce((acc, entry) => {
+      if (!entry.meta) {
+        return acc;
+      }
       let { name, callback } = entry.uploader(liveSocket.uploaders);
       acc[name] = acc[name] || { callback, entries: [] };
       acc[name].entries.push(entry);
@@ -3129,10 +3140,16 @@ var View = class {
   onJoinError(resp) {
     if (resp.reason === "reload") {
       this.log("error", () => [`failed mount with ${resp.status}. Falling back to page request`, resp]);
-      return this.onRedirect({ to: this.href });
+      if (this.isMain()) {
+        this.onRedirect({ to: this.href });
+      }
+      return;
     } else if (resp.reason === "unauthorized" || resp.reason === "stale") {
       this.log("error", () => ["unauthorized live_redirect. Falling back to page request", resp]);
-      return this.onRedirect({ to: this.href });
+      if (this.isMain()) {
+        this.onRedirect({ to: this.href });
+      }
+      return;
     }
     if (resp.redirect || resp.live_redirect) {
       this.joinPending = false;
@@ -3405,7 +3422,7 @@ var View = class {
     };
     this.pushWithReply(refGenerator, "event", event, (resp) => {
       dom_default.showError(inputEl, this.liveSocket.binding(PHX_FEEDBACK_FOR));
-      if (dom_default.isUploadInput(inputEl) && inputEl.getAttribute("data-phx-auto-upload") !== null) {
+      if (dom_default.isUploadInput(inputEl) && dom_default.isAutoUpload(inputEl)) {
         if (LiveUploader.filesAwaitingPreflight(inputEl).length > 0) {
           let [ref, _els] = refGenerator();
           this.uploadFiles(inputEl.form, targetCtx, ref, cid, (_uploads) => {
@@ -3560,6 +3577,7 @@ var View = class {
       if (inputs.length === 0) {
         return;
       }
+      inputs.forEach((input2) => input2.hasAttribute(PHX_UPLOAD_REF) && LiveUploader.clearFiles(input2));
       let input = inputs.find((el) => el.type !== "hidden") || inputs[0];
       let phxEvent = form.getAttribute(this.binding(PHX_AUTO_RECOVER)) || form.getAttribute(this.binding("change"));
       js_default.exec("change", phxEvent, view, input, ["push", { _target: input.name, newCid, callback }]);
@@ -3597,7 +3615,8 @@ var View = class {
     let template = document.createElement("template");
     template.innerHTML = html;
     return dom_default.all(this.el, `form[${phxChange}]`).filter((form) => form.id && this.ownsElement(form)).filter((form) => form.elements.length > 0).filter((form) => form.getAttribute(this.binding(PHX_AUTO_RECOVER)) !== "ignore").map((form) => {
-      let newForm = template.content.querySelector(`form[id="${form.id}"][${phxChange}="${form.getAttribute(phxChange)}"]`);
+      const phxChangeValue = form.getAttribute(phxChange).replaceAll(/([\[\]"])/g, "\\$1");
+      let newForm = template.content.querySelector(`form[id="${form.id}"][${phxChange}="${phxChangeValue}"]`);
       if (newForm) {
         return [form, newForm, this.targetComponentID(newForm)];
       } else {
@@ -4386,7 +4405,7 @@ var LiveSocket = class {
         let currentIterations = iterations;
         iterations++;
         let { at, type: lastType } = dom_default.private(input, "prev-iteration") || {};
-        if (at === currentIterations - 1 && type !== lastType) {
+        if (at === currentIterations - 1 && type === "change" && lastType === "input") {
           return;
         }
         dom_default.putPrivate(input, "prev-iteration", { at: currentIterations, type });

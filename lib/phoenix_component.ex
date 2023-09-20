@@ -513,7 +513,7 @@ defmodule Phoenix.Component do
 
   ## Functions
 
-  alias Phoenix.LiveView.{Static, Socket}
+  alias Phoenix.LiveView.{Static, Socket, AsyncResult}
   @reserved_assigns Phoenix.Component.Declarative.__reserved__()
   # Note we allow live_action as it may be passed down to a component, so it is not listed
   @non_assignables [:uploads, :streams, :socket, :myself]
@@ -883,6 +883,10 @@ defmodule Phoenix.Component do
 
   If you don't want the container to affect layout, you can use the CSS property
   `display: contents` or a class that applies it, like Tailwind's `.contents`.
+
+  Beware if you set this to `:body`, as any content injected inside the body
+  (such as `Phoenix.LiveReload` features) will be discarded once the LiveView
+  connects
   """
   def live_render(conn_or_socket, view, opts \\ [])
 
@@ -2127,6 +2131,7 @@ defmodule Phoenix.Component do
     The HTTP method.
     It is only used if an `:action` is given. If the method is not `get` nor `post`,
     an input tag with name `_method` is generated alongside the form tag.
+    If an `:action` is given with no method, the method will default to `post`.
     """
   )
 
@@ -2242,7 +2247,7 @@ defmodule Phoenix.Component do
   association. To cast the user input from a nested form, one simply needs to configure
   the options:
 
-      schema "lists" do
+      schema "mailing_lists" do
         field :title, :string
 
         embeds_many :emails, EmailNotification, on_replace: :delete do
@@ -2263,8 +2268,8 @@ defmodule Phoenix.Component do
 
   Here we see the `:sort_param` and `:drop_param` options in action.
 
-  *Note: `on_replace: :delete` on the `has_many` and `embeds_many` is required when using
-  these options.
+  > Note: `on_replace: :delete` on the `has_many` and `embeds_many` is required
+  > when using these options.
 
   When Ecto sees the specified sort or drop parameter from the form, it will sort
   the children based on the order they appear in the form, add new children it hasn't
@@ -2274,39 +2279,43 @@ defmodule Phoenix.Component do
 
   ```heex
   <.inputs_for :let={ef} field={@form[:emails]}>
-    <input type="hidden" name="list[emails_sort][]" value={ef.index} />
+    <input type="hidden" name="mailing_list[emails_sort][]" value={ef.index} />
     <.input type="text" field={ef[:email]} placeholder="email" />
     <.input type="text" field={ef[:name]} placeholder="name" />
     <label>
-      <input type="checkbox" name="list[emails_drop][]" value={ef.index} class="hidden" />
+      <input type="checkbox" name="mailing_list[emails_drop][]" value={ef.index} class="hidden" />
       <.icon name="hero-x-mark" class="w-6 h-6 relative top-2" />
     </label>
   </.inputs_for>
 
+  <input type="hidden" name="mailing_list[emails_drop][]" />
+
   <label class="block cursor-pointer">
-    <input type="checkbox" name="list[emails_sort][]" class="hidden" />
+    <input type="checkbox" name="mailing_list[emails_sort][]" class="hidden" />
     add more
   </label>
-
-  <input type="hidden" name="list[emails_drop][]" />
   ```
 
   We used `inputs_for` to render inputs for the `:emails` association, which
   contains an email address and name input for each child. Within the nested inputs,
-  we render a hidden `list[emails_sort][]` input, which is set to the index of the
+  we render a hidden `mailing_list[emails_sort][]` input, which is set to the index of the
   given child. This tells Ecto's cast operation how to sort existing children, or
   where to insert new children. Next, we render the email and name inputs as usual.
   Then we render a label containing the "delete" text and a hidden checkbox input
-  with the name `list[emails_drop][]`, containing the index of the child as its value.
+  with the name `mailing_list[emails_drop][]`, containing the index of the child as its value.
   Like before, this tells Ecto to delete the child at this index when the checkbox is
   checked. Wrapping the checkbox and textual content in a label makes any clicked content
   within the label check and uncheck the checkbox.
 
-  Finally, outside the `inputs_for`, we render another label with a value-less
-  `list[emails_sort][]` checkbox with accompanied "add more" text. Ecto will
-  treat unknown sort params as new children and build a new child. We also render an
-  empty `list[emails_drop][]` to ensure that all children are deleted when saving our
-  form in the event that the user dropped all the inputs.
+  Outside the `inputs_for`, we render an empty `mailing_list[emails_drop][]`,
+  to ensure that all children are deleted when saving a form where the user
+  dropped all entries. This checkbox is required whenever dropping associations.
+
+  Finally, we also render another label with a value-less `mailing_list[emails_sort][]`
+  checkbox with accompanied "add more" text. Ecto will treat unknown sort params
+  as new children and build a new child. This checkbox is optional and only necessary
+  if you want to dyamically add entries. You can optionally add a similar checkbox
+  before the `<.inputs_for>`, in the case you want to prepend entries.
   """
   @doc type: :component
   attr.(:field, Phoenix.HTML.FormField,
@@ -2788,7 +2797,7 @@ defmodule Phoenix.Component do
       data-phx-active-refs={join_refs(for(entry <- @upload.entries, do: entry.ref))}
       data-phx-done-refs={join_refs(for(entry <- @upload.entries, entry.done?, do: entry.ref))}
       data-phx-preflighted-refs={join_refs(for(entry <- @upload.entries, entry.preflighted?, do: entry.ref))}
-      data-phx-auto-upload={valid_upload?(@upload) and @upload.auto_upload?}
+      data-phx-auto-upload={@upload.auto_upload?}
       {if @upload.max_entries > 1, do: Map.put(@rest, :multiple, true), else: @rest}
     />
     """
@@ -2796,10 +2805,7 @@ defmodule Phoenix.Component do
 
   defp join_refs(entries), do: Enum.join(entries, ",")
 
-  defp valid_upload?(%{entries: [_ | _], errors: []}), do: true
-  defp valid_upload?(%{}), do: false
-
-  @doc """
+  @doc ~S"""
   Generates an image preview on the client for a selected file.
 
   [INSERT LVATTRDOCS]
@@ -2811,6 +2817,18 @@ defmodule Phoenix.Component do
     <.live_img_preview entry={entry} width="75" />
   <% end %>
   ```
+
+  When you need to use it multiple times, make sure that they have distinct ids
+
+  ```heex
+  <%= for entry <- @uploads.avatar.entries do %>
+    <.live_img_preview entry={entry} width="75" />
+  <% end %>
+
+  <%= for entry <- @uploads.avatar.entries do %>
+    <.live_img_preview id={"modal-#{entry.ref}"} entry={entry} width="500" />
+  <% end %>
+  ```
   """
   @doc type: :component
 
@@ -2819,12 +2837,18 @@ defmodule Phoenix.Component do
     doc: "The `Phoenix.LiveView.UploadEntry` struct"
   )
 
+  attr.(:id, :string,
+    default: nil,
+    doc:
+      "the id of the img tag. Derived by default from the entry ref, but can be overridden as needed if you need to render a preview of the same entry multiple times on the same page"
+  )
+
   attr.(:rest, :global, [])
 
   def live_img_preview(assigns) do
     ~H"""
     <img
-      id={"phx-preview-#{@entry.ref}"}
+      id={@id || "phx-preview-#{@entry.ref}"}
       data-phx-upload-ref={@entry.upload_ref}
       data-phx-entry-ref={@entry.ref}
       data-phx-hook="Phoenix.LiveImgPreview"
@@ -2870,5 +2894,52 @@ defmodule Phoenix.Component do
       end
     %><% end %>
     """
+  end
+
+  @doc """
+  Renders an async assign with slots for the different loading states.
+
+  *Note*: The inner block receives the result of the async assign as a :let.
+  The let is only accessible to the inner block and is not in scope to the
+  other slots.
+
+  ## Examples
+
+  ```heex
+  <.async_result :let={org} assign={@org}>
+    <:loading>Loading organization...</:loading>
+    <:failed :let={reason}>there was an error loading the organization</:failed>
+    <%= if org do %>
+      <%= org.name %>
+    <% else %>
+      You don't have an organization yet.
+    <% end %>
+  </.async_result>
+  ```
+  """
+  attr.(:assign, AsyncResult, required: true)
+  slot.(:loading, doc: "rendered while the assign is loading")
+
+  slot.(:failed,
+    doc:
+      "rendered when an error or exit is caught or assign_async returns `{:error, reason}`. Receives the error as a :let."
+  )
+
+  slot.(:inner_block,
+    doc:
+      "rendered when the assign is loaded successfully via AsyncResult.ok/2. Receives the result as a :let"
+  )
+
+  def async_result(%{assign: async_assign} = assigns) do
+    cond do
+      async_assign.ok? ->
+        ~H|<%= render_slot(@inner_block, @assign.result) %>|
+
+      async_assign.loading ->
+        ~H|<%= render_slot(@loading, @assign.loading) %>|
+
+      async_assign.failed ->
+        ~H|<%= render_slot(@failed, @assign.failed) %>|
+    end
   end
 end

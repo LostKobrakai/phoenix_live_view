@@ -48,6 +48,8 @@ let DOM = {
 
   isUploadInput(el){ return el.type === "file" && el.getAttribute(PHX_UPLOAD_REF) !== null },
 
+  isAutoUpload(inputEl){ return inputEl.hasAttribute("data-phx-auto-upload") },
+
   findUploadInputs(node){ return this.all(node, `input[type="file"][${PHX_UPLOAD_REF}]`) },
 
   findComponentNodeList(node, cid){
@@ -75,6 +77,7 @@ let DOM = {
 
     if(e.defaultPrevented || href === null || this.wantsNewTab(e)){ return false }
     if(href.startsWith("mailto:") || href.startsWith("tel:")){ return false }
+    if(e.target.isContentEditable){ return false }
 
     try {
       url = new URL(href)
